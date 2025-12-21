@@ -1,0 +1,22 @@
+#!/bin/bash
+
+#PBS -N minimind_pretrain
+#PBS -l select=1:ncpus=4:mem=32gb:ngpus=1:gpu_model=H200
+#PBS -l walltime=02:00:00
+#PBS -M z5542506@ad.unsw.edu.au
+#PBS -m ae
+#PBS -j oe
+
+# =============================================================================
+# minimind 训练脚本
+# =============================================================================
+
+# 1. 进入项目工作目录
+cd /home/z5542506/minimind/trainer
+
+# 2. 加载必要的系统模块 (根据 Katana 实际 CUDA 版本调整)
+module load cuda/13.0.0
+
+# 3. 使用 uv 运行训练脚本
+# uv 会自动识别当前目录下的 .venv
+uv run python train_pretrain.py
