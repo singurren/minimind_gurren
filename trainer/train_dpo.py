@@ -22,30 +22,40 @@ warnings.filterwarnings('ignore')
 
 
 def logits_to_log_probs(logits, labels):
+    # DPO 核心辅助函数
+    # 提取 target token 对应的 log probability
     # logits shape: (batch_size, seq_len, vocab_size)
-    # labels shape: (batch_size, seq_len)
-    # log_probs shape: (batch_size, seq_len)
     log_probs = F.log_softmax(logits, dim=2)
+    # gather 操作仅保留 label 位置的概率，减少显存占用
     log_probs_per_token = torch.gather(log_probs, dim=2, index=labels.unsqueeze(2)).squeeze(-1)
     return log_probs_per_token
 
 
 def dpo_loss(ref_log_probs, policy_log_probs, mask, beta):
-    # ref_log_probs 和 policy_log_probs 都是 shape: (batch_size, seq_len)
-    # https://github.com/jingyaogong/minimind/issues/298
-    seq_lengths = mask.sum(dim=1, keepdim=True).clamp_min(1e-8)  # 防止零长度mask导致除零NaN
+    # DPO (Direct Preference Optimization) Loss Implementation
+    # 论文公式: L_DPO = -E[log sigma(beta * (log(pi_theta) - log(pi_ref)))]
+    # 相比 RLHF (PPO)，DPO 直接优化策略模型，无需训练 Reward Model 和 Value Model，
+    # 训练稳定性显著提高，且显存开销减半。
+    
+    # 1. Mask 处理：确保 padding token 不参与 Loss 计算
+    seq_lengths = mask.sum(dim=1, keepdim=True).clamp_min(1e-8)
     ref_log_probs = (ref_log_probs * mask).sum(dim=1) / seq_lengths.squeeze()
     policy_log_probs = (policy_log_probs * mask).sum(dim=1) / seq_lengths.squeeze()
 
-    # 将 chosen 和 rejected 数据分开
+    # 2. Split Batch: 数据加载时已按 [chosen, rejected] 拼接，此处切分
     batch_size = ref_log_probs.shape[0]
     chosen_ref_log_probs = ref_log_probs[:batch_size // 2]
     reject_ref_log_probs = ref_log_probs[batch_size // 2:]
     chosen_policy_log_probs = policy_log_probs[:batch_size // 2]
     reject_policy_log_probs = policy_log_probs[batch_size // 2:]
 
+    # 3. 计算 Log Ratios (隐式 Reward)
+    # pi_logratios 代表当前策略认为 chosen 比 rejected 好多少
     pi_logratios = chosen_policy_log_probs - reject_policy_log_probs
+    # ref_logratios 代表参考策略（KL 约束锚点）的偏好
     ref_logratios = chosen_ref_log_probs - reject_ref_log_probs
+    
+    # 4. Final Logits: 我们的策略相比参考策略，对 chosen 的偏好程度是否提升了？
     logits = pi_logratios - ref_logratios
     loss = -F.logsigmoid(beta * logits)
     return loss.mean()
@@ -61,6 +71,8 @@ def train_epoch(epoch, loader, iters, ref_model, lm_config, start_step=0, wandb=
         y_rejected = batch['y_rejected'].to(args.device)
         mask_chosen = batch['mask_chosen'].to(args.device)
         mask_rejected = batch['mask_rejected'].to(args.device)
+        
+        # 拼接 chosen 和 rejected，一次 forward 提高 GPU 利用率
         x = torch.cat([x_chosen, x_rejected], dim=0)
         y = torch.cat([y_chosen, y_rejected], dim=0)
         mask = torch.cat([mask_chosen, mask_rejected], dim=0)
@@ -70,6 +82,7 @@ def train_epoch(epoch, loader, iters, ref_model, lm_config, start_step=0, wandb=
             param_group['lr'] = lr
 
         with autocast_ctx:
+            # 性能优化：Ref Model 不需要梯度，完全处于 eval 模式
             with torch.no_grad():
                 ref_outputs = ref_model(x)
                 ref_logits = ref_outputs.logits
@@ -174,6 +187,7 @@ if __name__ == "__main__":
     model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)
     Logger(f'策略模型总参数量：{sum(p.numel() for p in model.parameters()) / 1e6:.3f} M')
     # 初始化参考模型（ref_model冻结）
+    # 显存优化：Ref Model 可量化或卸载到 CPU (Offload)，本项目规模较小故全量加载
     ref_model, _ = init_model(lm_config, args.from_weight, device=args.device)
     ref_model.eval()
     ref_model.requires_grad_(False)

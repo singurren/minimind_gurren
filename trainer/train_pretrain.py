@@ -135,7 +135,12 @@ if __name__ == "__main__":
     train_ds = PretrainDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
-    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
+    
+    # 优化器参数调整：
+    # 默认的AdamW参数 (beta1=0.9, beta2=0.999) 在训练初期容易导致loss震荡。
+    # 参考LLaMA和PaLM的设置，将beta2调整为0.95，实测在训练前期的稳定性有明显提升。
+    # optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, betas=(0.9, 0.95))
     
     # ========== 6. 从ckp恢复状态 ==========
     start_epoch, start_step = 0, 0

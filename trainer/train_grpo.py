@@ -25,8 +25,13 @@ warnings.filterwarnings('ignore')
 
 
 def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
-    """整合所有奖励函数计算总奖励"""
+    """
+    Reward 计算逻辑：
+    1. 格式奖励 (Format Reward): 强制模型按 <think>...</think><answer>...</answer> 格式输出，便于思维链 (CoT) 解析。
+    2. 内容奖励 (Content Reward): 使用外部 Reward Model 对生成的回答质量进行打分。
+    """
     def reasoning_model_reward(rewards):
+        # 正则匹配思维链格式
         pattern = r"^<think>\n.*?\n</think>\n<answer>\n.*?\n</answer>$"
         pattern2 = r"^<think>\n.*?\n</think>\n\n<answer>\n.*?\n</answer>$"
         matches_pattern = [re.match(pattern, response, re.S) for response in responses]
@@ -40,6 +45,7 @@ def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
                 format_rewards.append(0.0)
         rewards += torch.tensor(format_rewards, device=args.device)
 
+        # 细粒度 Tag 奖励
         def mark_num(text):
             reward = 0
             if text.count("<think>") == 1: reward += 0.25
@@ -56,6 +62,7 @@ def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
     if args.reasoning == 1:
         rewards = reasoning_model_reward(rewards)
 
+    # 批量计算 Reward Model Score
     with torch.no_grad():
         reward_model_scores = []
         batch_size = len(prompts)
@@ -73,8 +80,9 @@ def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
 
                 tmp_chat = messages + [{"role": "assistant", "content": response}]
                 score = reward_model.get_score(reward_tokenizer, tmp_chat)
-                score = max(min(score, scale), -scale)
+                score = max(min(score, scale), -scale) # Clip reward
 
+                # 如果是推理模型，额外给予 Answer 部分的权重
                 if args.reasoning == 1:
                     answer_match = re.search(r'<answer>(.*?)</answer>', response, re.DOTALL)
                     if answer_match:
@@ -94,21 +102,24 @@ def calculate_rewards(prompts, responses, reward_model, reward_tokenizer):
 
 def grpo_train_epoch(epoch, loader, iters, ref_model, reward_model, reward_tokenizer, start_step=0, wandb=None):
     for step, batch in enumerate(loader, start=start_step + 1):
-        prompts = batch['prompt']  # list[str], length B
+        prompts = batch['prompt']
         prompt_inputs = tokenizer(prompts, return_tensors="pt", padding=True, return_token_type_ids=False,
-                                  padding_side="left", add_special_tokens=False).to(args.device)  # input_ids: [B, P], attention_mask: [B, P]
+                                  padding_side="left", add_special_tokens=False).to(args.device)
         if args.max_seq_len:
             prompt_inputs["input_ids"] = prompt_inputs["input_ids"][:, -args.max_seq_len:]
             prompt_inputs["attention_mask"] = prompt_inputs["attention_mask"][:, -args.max_seq_len:]
 
+        # 1. 采样 (Sampling)
+        # 相比 PPO，GRPO 每次针对一个 Prompt 采样一组 (Group) 回答 (G=num_generations)
+        # 这样可以直接在 Group 内部计算 Baseline，而不需要训练额外的 Value Network (Critic)。
+        # 显存节省：Critic Model (1x Model Size) + GAE Calculation
         with torch.no_grad():
-            # DDP 模型需要使用 .module 访问 generate 方法
             model_for_gen = model.module if isinstance(model, DistributedDataParallel) else model
             outputs = model_for_gen.generate(
                 **prompt_inputs, max_new_tokens=args.max_gen_len, do_sample=True, temperature=0.8,
-                num_return_sequences=args.num_generations, pad_token_id=tokenizer.pad_token_id)  # [B*num_gen, P+R]
+                num_return_sequences=args.num_generations, pad_token_id=tokenizer.pad_token_id)
 
-        completion_ids = outputs[:, prompt_inputs["input_ids"].size(1):]  # [B*num_gen, R]
+        completion_ids = outputs[:, prompt_inputs["input_ids"].size(1):]
         
         def get_per_token_logps(mdl, input_ids, n_keep):
             input_ids = input_ids.detach().clone() if input_ids.is_inference() else input_ids
@@ -119,28 +130,38 @@ def grpo_train_epoch(epoch, loader, iters, ref_model, reward_model, reward_token
                 per_token_logps.append(torch.gather(logits_row.log_softmax(dim=-1), 1, ids_row.unsqueeze(1)).squeeze(1))
             return torch.stack(per_token_logps)
 
-        per_token_logps = get_per_token_logps(model, outputs, completion_ids.size(1))  # [B*num_gen, R]
+        # 2. 计算当前策略的 Log Probabilities
+        per_token_logps = get_per_token_logps(model, outputs, completion_ids.size(1))
+        # 3. 计算参考策略的 Log Probabilities (用于 KL 惩罚)
         with torch.no_grad():
-            ref_per_token_logps = get_per_token_logps(ref_model, outputs, completion_ids.size(1))  # [B*num_gen, R]
+            ref_per_token_logps = get_per_token_logps(ref_model, outputs, completion_ids.size(1))
 
+        # 4. 计算 Reward
         completions = tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
-        rewards = calculate_rewards(prompts, completions, reward_model, reward_tokenizer).to(args.device)  # [B*num_gen]
+        rewards = calculate_rewards(prompts, completions, reward_model, reward_tokenizer).to(args.device)
 
-        grouped_rewards = rewards.view(-1, args.num_generations)  # [B, num_gen]
-        mean_r = grouped_rewards.mean(dim=1).repeat_interleave(args.num_generations)  # [B*num_gen]
-        std_r = grouped_rewards.std(dim=1).repeat_interleave(args.num_generations)  # [B*num_gen]
+        # 5. Advantage Calculation (Group-Relative)
+        # GRPO 核心：A_i = (r_i - mean(R_group)) / std(R_group)
+        # 不需要 Value Model 预测 value baseline，直接用 Group 均值作为 baseline。
+        grouped_rewards = rewards.view(-1, args.num_generations)
+        mean_r = grouped_rewards.mean(dim=1).repeat_interleave(args.num_generations)
+        std_r = grouped_rewards.std(dim=1).repeat_interleave(args.num_generations)
         advantages = torch.clamp((rewards - mean_r) / (std_r + 1e-4), -10, 10)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)  # [B*num_gen]
+        # 再次归一化保证训练稳定
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-        is_eos = completion_ids == tokenizer.eos_token_id  # [B*num_gen, R]
+        # Masking EOS
+        is_eos = completion_ids == tokenizer.eos_token_id
         eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=args.device)
         eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-        completion_mask = (torch.arange(is_eos.size(1), device=args.device).expand(is_eos.size(0), -1) <= eos_idx.unsqueeze(1)).int()  # [B*num_gen, R]
+        completion_mask = (torch.arange(is_eos.size(1), device=args.device).expand(is_eos.size(0), -1) <= eos_idx.unsqueeze(1)).int()
 
+        # 6. Policy Loss + KL Penalty
+        # Loss = - (Adv * ratio - beta * KL)
         kl_div = ref_per_token_logps - per_token_logps
-        per_token_kl = torch.exp(kl_div) - kl_div - 1  # [B*num_gen, R]
-        per_token_loss = -(torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1) - args.beta * per_token_kl)  # [B*num_gen, R]
-        loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean() / args.accumulation_steps  # scalar
+        per_token_kl = torch.exp(kl_div) - kl_div - 1  # Schman k-approx KL
+        per_token_loss = -(torch.exp(per_token_logps - per_token_logps.detach()) * advantages.unsqueeze(1) - args.beta * per_token_kl)
+        loss = ((per_token_loss * completion_mask).sum(dim=1) / completion_mask.sum(dim=1)).mean() / args.accumulation_steps
         loss.backward()
 
         if (step + 1) % args.accumulation_steps == 0:

@@ -7,3 +7,5 @@ dataset/__init__.py
 dataset/dataset.md
 uv.lock
 checkpoints/
+dataset/sft_mini_512.jsonl
+minimind_test.ipynb
