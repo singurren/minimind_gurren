@@ -55,6 +55,13 @@
 *   **🛠️ MinHash LSH 去重：** 实现模糊去重，解决简单的 MD5 匹配无法识别的近义重复。
 *   **🔍 质量过滤：** 增加基于启发式规则的清洗逻辑，从源头提升 Token 有效性。
 
+### 4. 推理与部署工程 (Inference & Deployment)
+
+为了打通模型从训练到生产环境的“最后一公里”，本项目实现了完整的模型导出与推理压测方案：
+
+*   **📦 模型导出 (`export_model.py`):** 支持将 PyTorch 模型导出为 **ONNX** 格式（支持 Dynamic Axes），验证了算子兼容性，为 TensorRT 高性能部署做好了准备。
+*   **⚡ 推理加速 (`benchmark_inference.py`):** 提供了原生 PyTorch 与 **vLLM** 的推理性能基准测试脚本。支持通过命令行参数切换后端，方便用户在实际环境中对比 PyTorch 与 vLLM (PagedAttention) 的吞吐量差异。
+
 ---
 
 ## 🚀 快速复现 (Quick Start)
@@ -83,6 +90,16 @@ uv run benchmark_alignment_ablation.py
 ### 3. 运行数据处理工具
 ```bash
 uv run data_process_pro.py --input dataset/pretrain_data.jsonl --output dataset/clean_data.jsonl
+```
+
+### 4. 运行推理与部署脚本
+```bash
+# 导出 ONNX 模型并验证
+uv run export_model.py
+
+# 运行推理性能压测 (PyTorch vs vLLM)
+# 默认仅运行 PyTorch 基准，如需对比 vLLM 请指定模型路径
+uv run benchmark_inference.py --framework all --model_path ./MiniMind2
 ```
 
 ---

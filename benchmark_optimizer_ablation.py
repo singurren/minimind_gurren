@@ -4,15 +4,15 @@ import time
 import pandas as pd
 from torch.optim import AdamW, SGD
 
-# Minimal implementation of Lion Optimizer if not available
+# 如果 Lion 优化器不可用，提供其最小化实现
 class Lion(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-4, betas=(0.9, 0.99), weight_decay=0.0):
         if not 0.0 <= lr:
-            raise ValueError(f"Invalid learning rate: {lr}")
+            raise ValueError(f"无效的学习率: {lr}")
         if not 0.0 <= betas[0] < 1.0:
-            raise ValueError(f"Invalid beta parameter at index 0: {betas[0]}")
+            raise ValueError(f"索引 0 处的无效 beta 参数: {betas[0]}")
         if not 0.0 <= betas[1] < 1.0:
-            raise ValueError(f"Invalid beta parameter at index 1: {betas[1]}")
+            raise ValueError(f"索引 1 处的无效 beta 参数: {betas[1]}")
         defaults = dict(lr=lr, betas=betas, weight_decay=weight_decay)
         super().__init__(params, defaults)
 
@@ -28,28 +28,28 @@ class Lion(torch.optim.Optimizer):
                     continue
                 grad = p.grad
                 if grad.is_sparse:
-                    raise RuntimeError('Lion does not support sparse gradients')
+                    raise RuntimeError('Lion 不支持稀疏梯度')
                 state = self.state[p]
                 if len(state) == 0:
                     state['exp_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
                 exp_avg = state['exp_avg']
                 beta1, beta2 = group['betas']
-                # Weight update
+                # 权重更新
                 update = exp_avg * beta1 + grad * (1 - beta1)
                 p.add_(torch.sign(update), alpha=-group['lr'])
-                # Decay the momentum running average coefficient
+                # 更新动量运行平均系数
                 exp_avg.mul_(beta2).add_(grad, alpha=1 - beta2)
                 if group['weight_decay'] > 0:
                     p.mul_(1 - group['lr'] * group['weight_decay'])
         return loss
 
 def benchmark_optimizer():
-    print("🚀 Starting Optimizer Ablation: AdamW vs Lion vs SGD")
+    print("开始优化器消融实验: AdamW vs Lion vs SGD")
     print("--------------------------------------------------")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    # Toy Model & Data
+    # 模拟模型与数据
     input_dim = 1024
     hidden_dim = 2048
     output_dim = 1024
@@ -81,7 +81,7 @@ def benchmark_optimizer():
     results = []
 
     for name, opt_fn in optimizers.items():
-        print(f"Testing {name}...")
+        print(f"正在测试 {name}...")
         torch.manual_seed(42)
         model = ToyModel().to(device)
         optimizer = opt_fn(model.parameters())
@@ -101,9 +101,9 @@ def benchmark_optimizer():
         
         end_time = time.time()
         
-        # Metrics
-        peak_mem = torch.cuda.max_memory_allocated() / 1024 / 1024 # MB
-        total_time = (end_time - start_time) * 1000 # ms
+        # 指标计算
+        peak_mem = torch.cuda.max_memory_allocated() / 1024 / 1024 # 单位: MB
+        total_time = (end_time - start_time) * 1000 # 单位: ms
         avg_step_time = total_time / 100
         final_loss = losses[-1]
         
@@ -118,14 +118,14 @@ def benchmark_optimizer():
         torch.cuda.empty_cache()
 
     df = pd.DataFrame(results)
-    print("\n📊 Ablation Results:")
+    print("\n消融实验结果:")
     print(df.to_string(index=False))
     
     # 结论生成
-    print("\n📝 Conclusion:")
+    print("\n结论:")
     print("1. Lion 优化器仅存储一阶动量 (Momentum)，相比 AdamW (存储一阶+二阶动量) 显存开销更小。")
     print("2. Lion 在本 Toy Model 上收敛速度与 AdamW 相当，但 step 耗时略低（涉及计算量更少）。")
-    print("3. 最终选择 AdamW 是因为其在 Transformer 类大模型训练中表现出更好的泛化稳定性和社区支持。  ")
+    print("3. 最终选择 AdamW 是因为其在 Transformer 类大模型训练中表现出更好的泛化稳定性和社区支持。")
 
 if __name__ == "__main__":
     benchmark_optimizer()
