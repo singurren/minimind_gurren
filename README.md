@@ -104,6 +104,6 @@ uv run benchmark_inference.py --framework all --model_path ./MiniMind2
 
 ---
 
-## 🤝 致谢
+## 致谢
 
 本项目基于 [MiniMind](https://github.com/jingyaogong/minimind) (by @jingyaogong) 进行二次开发。感谢原作者提供了如此优秀的极简 LLM 实现，为通过消融实验深入理解大模型原理提供了绝佳的基础。
