@@ -62,10 +62,10 @@ def main():
     input_mode = int(input('[0] 自动测试\n[1] 手动输入\n'))
     streamer = TextStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     
-    prompt_iter = prompts if input_mode == 0 else iter(lambda: input('👶: '), '')
+    prompt_iter = prompts if input_mode == 0 else iter(lambda: input('human: '), '')
     for prompt in prompt_iter:
         setup_seed(2026) # or setup_seed(random.randint(0, 2048))
-        if input_mode == 0: print(f'👶: {prompt}')
+        if input_mode == 0: print(f'human: {prompt}')
         conversation = conversation[-args.historys:] if args.historys else []
         conversation.append({"role": "user", "content": prompt})
 
@@ -74,7 +74,7 @@ def main():
         inputs = tokenizer.apply_chat_template(**templates) if args.weight != 'pretrain' else (tokenizer.bos_token + prompt)
         inputs = tokenizer(inputs, return_tensors="pt", truncation=True).to(args.device)
 
-        print('🤖️: ', end='')
+        print('robot: ', end='')
         generated_ids = model.generate(
             inputs=inputs["input_ids"], attention_mask=inputs["attention_mask"],
             max_new_tokens=args.max_new_tokens, do_sample=True, streamer=streamer,
