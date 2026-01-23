@@ -4,12 +4,12 @@ from model.model_minimind import MiniMindConfig, MiniMindModel
 import pandas as pd
 
 def benchmark_attention():
-    print("🚀 Starting Architecture Ablation: GQA vs MHA")
+    print("Starting Architecture Ablation: GQA vs MHA")
     print("--------------------------------------------------")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
-        print("⚠️ Warning: Running on CPU, memory metrics might not reflect GPU usage accurately.")
+        print("Warning: Running on CPU, memory metrics might not reflect GPU usage accurately.")
 
     # 保持模型其他参数一致，只修改 attention heads
     base_config = {
@@ -69,11 +69,11 @@ def benchmark_attention():
         torch.cuda.empty_cache()
 
     df = pd.DataFrame(results)
-    print("\n📊 Ablation Results:")
+    print("\nAblation Results:")
     print(df.to_string(index=False))
     
     # 结论生成
-    print("\n📝 Conclusion:")
+    print("\nConclusion:")
     mha_mem = float(results[0]["Peak Memory (MB)"])
     gqa_mem = float(results[1]["Peak Memory (MB)"])
     saving = (mha_mem - gqa_mem) / mha_mem * 100
