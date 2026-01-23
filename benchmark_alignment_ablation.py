@@ -46,12 +46,12 @@ def measure_peak_memory(name, setup_fn, train_step_fn, config, device):
         return 0.0
 
 def benchmark_alignment():
-    print("🚀 Starting Real-World Alignment Memory Benchmark")
+    print("Starting Real-World Alignment Memory Benchmark")
     print("--------------------------------------------------")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":
-        print("⚠️ Warning: Running on CPU. Memory stats will be inaccurate (tracking RAM not VRAM).")
+        print("Warning: Running on CPU. Memory stats will be inaccurate (tracking RAM not VRAM).")
 
     # 使用较小的配置以确保在笔记本上能跑通对比，重点是相对比例
     config = MiniMindConfig(
@@ -158,19 +158,17 @@ def benchmark_alignment():
     # Conclusion
     # ==========================================
     df = pd.DataFrame(results)
-    print("\n📊 Real-World Memory Measurement Results:")
+    print("\nReal-World Memory Measurement Results:")
     print(df.to_string(index=False))
     
-    print("\n📝 Engineer's Analysis:")
+    print("\nEngineer's Analysis:")
     if mem_simpo > 0 and mem_dpo > 0:
         saving_dpo = (mem_dpo - mem_simpo) / mem_dpo * 100
         print(f"1. [SimPO vs DPO]: SimPO 通过移除 Reference Model，显存占用降低了约 {saving_dpo:.1f}%。")
-        print("   -> 关键优势：允许在同样硬件下使用更大的 Batch Size 或更长的 Sequence。")
     
     if mem_ppo > 0 and mem_dpo > 0:
         saving_ppo = (mem_ppo - mem_dpo) / mem_ppo * 100
         print(f"2. [GRPO vs PPO]: GRPO (同 DPO 架构) 相比传统的 PPO，去除了 Critic Model，显存节省了约 {saving_ppo:.1f}%。")
-        print("   -> 关键优势：不需要训练独立的 Value Network，且利用 Group 采样去除了对 Critic 的依赖。")
 
 if __name__ == "__main__":
     benchmark_alignment()
